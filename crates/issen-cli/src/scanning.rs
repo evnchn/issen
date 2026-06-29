@@ -80,6 +80,11 @@ fn finding_to_row(
         description: finding.description.clone(),
         matched_indicator: finding.matched_indicator.clone(),
         tags: serde_json::to_string(&finding.tags).unwrap_or_else(|_| "[]".to_string()),
+        // A raw signature/IOC hit carries no calibrated confidence or derivation
+        // level; store NULL rather than invent one. Populating these from
+        // correlation-derived findings is tracked as follow-up work.
+        confidence: None,
+        assertion_level: None,
     }
 }
 
@@ -114,6 +119,8 @@ fn timestomp_finding_to_row(
         description: finding.note.clone(),
         matched_indicator: None,
         tags: serde_json::to_string(&tags).unwrap_or_else(|_| "[]".to_string()),
+        confidence: None,
+        assertion_level: None,
     }
 }
 
@@ -888,6 +895,8 @@ detection:
             description: "YARA match".to_string(),
             matched_indicator: None,
             tags: "[]".to_string(),
+            confidence: None,
+            assertion_level: None,
         }];
 
         enrich_events(&mut events, &findings);
@@ -910,6 +919,8 @@ detection:
                 description: "YARA match A".to_string(),
                 matched_indicator: None,
                 tags: "[]".to_string(),
+                confidence: None,
+                assertion_level: None,
             },
             FindingRow {
                 evidence_source_id: "case-001".to_string(),
@@ -920,6 +931,8 @@ detection:
                 description: "Sigma match B".to_string(),
                 matched_indicator: None,
                 tags: "[]".to_string(),
+                confidence: None,
+                assertion_level: None,
             },
         ];
 
@@ -952,6 +965,8 @@ detection:
             description: "YARA match".to_string(),
             matched_indicator: None,
             tags: "[]".to_string(),
+            confidence: None,
+            assertion_level: None,
         }];
 
         enrich_events(&mut events, &findings);
@@ -973,6 +988,8 @@ detection:
                 description: "match".to_string(),
                 matched_indicator: None,
                 tags: "[]".to_string(),
+                confidence: None,
+                assertion_level: None,
             },
             FindingRow {
                 evidence_source_id: "case-002".to_string(),
@@ -983,6 +1000,8 @@ detection:
                 description: "match".to_string(),
                 matched_indicator: None,
                 tags: "[]".to_string(),
+                confidence: None,
+                assertion_level: None,
             },
         ];
 

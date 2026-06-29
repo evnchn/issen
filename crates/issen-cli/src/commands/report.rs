@@ -83,6 +83,8 @@ mod tests {
                     description: "Failed-logon burst".into(),
                     matched_indicator: None,
                     tags: r#"["attack.t1110"]"#.into(),
+                    confidence: None,
+                    assertion_level: None,
                 }],
             )
             .expect("insert findings");

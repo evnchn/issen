@@ -19,6 +19,14 @@ pub struct FindingRow {
     pub description: String,
     pub matched_indicator: Option<String>,
     pub tags: String, // JSON-serialized Vec<String>
+    /// Calibrated analyst confidence, 0–100, when the producing engine supplies
+    /// one. `None` is a first-class value: an engine without a calibrated score
+    /// (e.g. a raw YARA/IOC hit) stores NULL rather than a fabricated default.
+    pub confidence: Option<u8>,
+    /// How the finding was derived: `"observed"`, `"correlated"`, or
+    /// `"inferred"` (mirrors `issen-correlation`'s `AssertionLevel`). `None`
+    /// when the producing engine does not classify derivation.
+    pub assertion_level: Option<String>,
 }
 
 /// Create the scan_findings table if it doesn't exist.
@@ -35,7 +43,13 @@ pub fn create_findings_table(conn: &Connection) -> Result<(), TimelineStoreError
             description         VARCHAR NOT NULL,
             matched_indicator   VARCHAR,
             tags                VARCHAR
-        )",
+        );
+        -- Agent-grade fields are added via ALTER … IF NOT EXISTS so the same
+        -- path upgrades databases created before these columns existed (fresh
+        -- databases get them here; older ones gain them on next open). Nullable:
+        -- engines without a calibrated score store NULL, never a fabricated value.
+        ALTER TABLE scan_findings ADD COLUMN IF NOT EXISTS confidence      UTINYINT;
+        ALTER TABLE scan_findings ADD COLUMN IF NOT EXISTS assertion_level VARCHAR;",
     )?;
     Ok(())
 }
@@ -66,7 +80,9 @@ pub fn insert_findings(
             rule_name           VARCHAR,
             description         VARCHAR,
             matched_indicator   VARCHAR,
-            tags                VARCHAR
+            tags                VARCHAR,
+            confidence          UTINYINT,
+            assertion_level     VARCHAR
          )",
     )?;
     {
@@ -81,6 +97,8 @@ pub fn insert_findings(
                 f.description,
                 f.matched_indicator,
                 f.tags,
+                f.confidence,
+                f.assertion_level,
             ])?;
         }
         appender.flush()?;
@@ -88,10 +106,12 @@ pub fn insert_findings(
     conn.execute_batch(
         "INSERT INTO scan_findings (
             evidence_source_id, artifact_path, engine, severity,
-            rule_name, description, matched_indicator, tags
+            rule_name, description, matched_indicator, tags,
+            confidence, assertion_level
          )
          SELECT evidence_source_id, artifact_path, engine, severity,
-                rule_name, description, matched_indicator, tags
+                rule_name, description, matched_indicator, tags,
+                confidence, assertion_level
          FROM _findings_stage;
          DROP TABLE _findings_stage;",
     )?;
@@ -118,7 +138,8 @@ pub fn query_findings(
             .collect();
         format!(
             "SELECT evidence_source_id, artifact_path, engine, severity,
-                    rule_name, description, matched_indicator, tags
+                    rule_name, description, matched_indicator, tags,
+                    confidence, assertion_level
              FROM scan_findings
              WHERE severity IN ({})
              ORDER BY CASE severity
@@ -132,7 +153,8 @@ pub fn query_findings(
         )
     } else {
         "SELECT evidence_source_id, artifact_path, engine, severity,
-                rule_name, description, matched_indicator, tags
+                rule_name, description, matched_indicator, tags,
+                confidence, assertion_level
          FROM scan_findings
          ORDER BY CASE severity
              WHEN 'critical' THEN 5
@@ -156,6 +178,8 @@ pub fn query_findings(
                 description: row.get(5)?,
                 matched_indicator: row.get(6)?,
                 tags: row.get::<_, Option<String>>(7)?.unwrap_or_default(),
+                confidence: row.get(8)?,
+                assertion_level: row.get(9)?,
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;
@@ -216,6 +240,8 @@ mod tests {
             description: format!("Rule {} matched", rule),
             matched_indicator: Some("$malware_string".to_string()),
             tags: "[]".to_string(),
+            confidence: None,
+            assertion_level: None,
         }
     }
 
@@ -336,6 +362,8 @@ mod tests {
             description: "Suspicious login detected".to_string(),
             matched_indicator: None,
             tags: "[\"attack.initial_access\"]".to_string(),
+            confidence: None,
+            assertion_level: None,
         };
         insert_findings(&conn, &[finding]).expect("insert");
 
@@ -343,6 +371,34 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert!(rows[0].matched_indicator.is_none());
         assert_eq!(rows[0].tags, "[\"attack.initial_access\"]");
+    }
+
+    #[test]
+    fn test_confidence_and_assertion_roundtrip() {
+        let conn = setup();
+        // A finding carrying calibrated confidence + derivation, alongside one
+        // that genuinely has neither (NULL must survive the round-trip, not
+        // collapse to a default).
+        let graded = FindingRow {
+            confidence: Some(35),
+            assertion_level: Some("inferred".to_string()),
+            ..sample_finding("high", "registry_resident_ps_stager")
+        };
+        let bare = FindingRow {
+            confidence: None,
+            assertion_level: None,
+            ..sample_finding("critical", "known_ransomware")
+        };
+        insert_findings(&conn, &[graded, bare]).expect("insert");
+
+        let rows = query_findings(&conn, None).expect("query");
+        // Sorted by severity desc: critical (bare) first, then high (graded).
+        assert_eq!(rows[0].rule_name, "known_ransomware");
+        assert_eq!(rows[0].confidence, None);
+        assert_eq!(rows[0].assertion_level, None);
+        assert_eq!(rows[1].rule_name, "registry_resident_ps_stager");
+        assert_eq!(rows[1].confidence, Some(35));
+        assert_eq!(rows[1].assertion_level.as_deref(), Some("inferred"));
     }
 
     #[test]

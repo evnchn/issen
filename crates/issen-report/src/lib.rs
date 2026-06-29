@@ -1151,6 +1151,8 @@ mod tests {
             description: "Malware detected".to_string(),
             matched_indicator: Some("$bad_string".to_string()),
             tags: "[]".to_string(),
+            confidence: None,
+            assertion_level: None,
         }];
         findings::insert_findings(store.connection(), &finding_rows).expect("insert findings");
 
@@ -1178,6 +1180,8 @@ mod tests {
             description: "Failed-logon burst".to_string(),
             matched_indicator: None,
             tags: r#"["attack.t1110"]"#.to_string(),
+            confidence: None,
+            assertion_level: None,
         }];
         findings::insert_findings(store.connection(), &finding_rows).expect("insert findings");
 

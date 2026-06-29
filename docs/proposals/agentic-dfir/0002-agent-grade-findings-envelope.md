@@ -1,110 +1,74 @@
-# RFC 0002 — Agent-grade findings: carry confidence, provenance, and technique to the export boundary
+# RFC 0002 — Agent-grade findings: confidence + assertion level on stored & exported findings
 
-- **Status:** Draft / RFC
-- **Touches:** `issen-timeline` (`FindingRow`, `scan_findings` schema), `issen-cli` (`scanning.rs`,
-  `timeline --flagged --format json`)
+- **Status:** Draft PR **with a working reference implementation** (this branch). Two follow-ups
+  (provenance, ATT&CK technique) left as open questions.
+- **Touches:** `issen-timeline` (`FindingRow`, `scan_findings` schema, insert/query),
+  `issen-cli` (`timeline --flagged --format json` export, `scanning.rs` converters)
 - **Motivated by:** DFIR field reflex — *attribution is the highest-hallucination-risk step in IR; carry
-  explicit confidence and lineage, never a bare label.*
+  explicit confidence and derivation, never a bare label.*
 
-## Problem
+## Problem (corrected from the first draft)
 
-The correlation layer already models calibrated confidence. `issen_correlation::model::Finding`
-(`crates/issen-correlation/src/model.rs:196`) carries:
+An LLM consuming `issen timeline --flagged --format json` gets, per finding, only
+`severity / rule_name / description / matched_indicator / tags`. There is **no confidence and no
+derivation level** in the stored `scan_findings` schema or the JSON envelope. So an agent cannot tell a
+directly-observed YARA hit from a low-certainty inferred framework attribution — exactly the input that
+produces over-confident attribution.
 
-```rust
-pub struct Finding {
-    pub rule_id: String,
-    pub title: String,
-    pub severity: String,
-    pub evidence_ids: Vec<String>,
-    pub summary: Option<String>,
-    pub explanation: Option<String>,
-    pub confidence: u8,                  // analyst confidence 0–100
-    pub assertion_level: AssertionLevel, // Observed | Correlated | Inferred
-    pub evidence_rendered: Vec<String>,
-}
-```
+> **Correction vs the first draft of this RFC (caught in different-lineage review):** I originally framed
+> this as "the confidence `issen_correlation::model::Finding` already computes is *dropped* at
+> `scanning.rs`." That is inaccurate — `scanning.rs` converts `issen_signatures::ScanFinding` (which has
+> no confidence field), a **different lineage** from correlation `Finding`. The honest statement is
+> narrower and is what this PR fixes: **the scan-findings storage + export path has no confidence/
+> assertion columns at all.** Correlation's `confidence: u8` / `AssertionLevel { Observed, Correlated,
+> Inferred }` is the *vocabulary this PR mirrors*, and wiring correlation-derived findings into these new
+> columns is the natural follow-up (see open questions) — not something silently lost today.
 
-But the **stored / exported** finding row throws most of that away. `issen_timeline::findings::FindingRow`
-(`crates/issen-timeline/src/findings.rs:11`) is:
+## What this PR does (the actual diff)
 
-```rust
-pub struct FindingRow {
-    pub evidence_source_id: String,
-    pub artifact_path: String,
-    pub engine: String,
-    pub severity: String,        // <- severity survives…
-    pub rule_name: String,
-    pub description: String,
-    pub matched_indicator: Option<String>,
-    pub tags: String,            // JSON Vec<String>
-}                                // …but confidence, assertion_level, provenance: GONE
-```
+Additive and nullable throughout — `None`/`NULL` is first-class, never a fabricated default.
 
-So the JSON an agent reads via `issen timeline --flagged --format json` has **severity but no
-confidence, no assertion level, and no machine-readable provenance** (which bytes/offset/artifact
-support the claim). An LLM consuming `severity: "high", rule_name: "powershell_empire_stager"` has no
-signal that this is an `Inferred` framework guess at confidence 35 vs an `Observed` fact at 95 — exactly
-the input that produces over-confident attribution. The data exists one layer up; it is dropped at the
-`scan_finding_to_finding_row` boundary (`crates/issen-cli/src/scanning.rs:68`).
-
-## Proposal
-
-Carry the confidence/assertion/provenance through to the row and the JSON export.
-
-1. Extend `FindingRow` and the `scan_findings` DuckDB schema (additive, nullable columns — old DBs still
-   read):
+1. `issen_timeline::findings::FindingRow` gains `confidence: Option<u8>` and
+   `assertion_level: Option<String>`.
+2. `scan_findings` gains the columns via `ALTER TABLE … ADD COLUMN IF NOT EXISTS` (same path upgrades
+   databases created before the columns existed). `insert_findings` (staging temp table + Appender +
+   `INSERT…SELECT`) and `query_findings` (both SELECT lists + row mapping) carry them.
+3. `timeline --flagged --format json` (`show_flagged_json`) emits `confidence` and `assertion_level`
+   (`null` when absent).
+4. The existing signature/timestomp converters set them to `None` (a raw IOC hit has no calibrated
+   score — honest NULL), with a comment marking correlation-population as follow-up.
+5. Tests: a round-trip test asserting `Some(35)/"inferred"` and `None/None` both survive storage→query
+   (NULL must not collapse to a default).
 
 ```rust
 pub struct FindingRow {
     // … existing fields …
-    pub confidence: Option<u8>,            // 0–100, from correlation Finding
-    pub assertion_level: Option<String>,   // "observed" | "correlated" | "inferred"
-    pub attack_technique: Option<String>,  // e.g. "T1059.001"
-    pub provenance: Option<String>,        // JSON: {source, artifact_path, offset?, evidence_ids}
+    pub confidence: Option<u8>,
+    pub assertion_level: Option<String>,
 }
 ```
-
-```sql
-ALTER TABLE scan_findings ADD COLUMN IF NOT EXISTS confidence       UTINYINT;
-ALTER TABLE scan_findings ADD COLUMN IF NOT EXISTS assertion_level  VARCHAR;
-ALTER TABLE scan_findings ADD COLUMN IF NOT EXISTS attack_technique VARCHAR;
-ALTER TABLE scan_findings ADD COLUMN IF NOT EXISTS provenance       VARCHAR;
-```
-
-2. Populate them at `scan_finding_to_finding_row` and wherever correlation findings land, defaulting to
-   `None` for engines that genuinely don't compute a confidence (YARA hit = `Observed`/None is honest;
-   don't fabricate a number).
-
-3. Emit them in the `--format json` / `findings_list` envelope. A consuming agent then sees:
 
 ```json
-{
-  "rule_name": "powershell_empire_stager",
-  "severity": "high",
-  "confidence": 35,
-  "assertion_level": "inferred",
-  "attack_technique": "T1059.001",
-  "provenance": {"source": "registry", "artifact_path": "SOFTWARE\\...\\Run", "evidence_ids": ["ev_4471"]}
-}
+{ "rule_name": "registry_resident_ps_stager", "severity": "high",
+  "confidence": null, "assertion_level": null, "tags": ["attack.t1059.001"] }
 ```
 
-## Why
+## Verification
 
-This is the single cheapest guardrail against an agent laundering a low-confidence inference into a
-confident report. The honest answer "`inferred`, 35" is already computed — we just have to stop
-discarding it at the storage boundary. Pairs directly with RFC 0001's `findings_list` tool.
-
-## Scope / non-goals
-
-- Not changing how confidence is *computed* — only carrying what correlation already produces.
-- `None` is a first-class value: an engine with no calibrated confidence must export `null`, never a
-  made-up default (a fabricated `confidence: 50` would be worse than absent).
+Built and tested on a pinned-`1.96.0` toolchain (matching CI): `cargo test -p issen-timeline` green
+incl. the new round-trip test; `cargo test -p issen-report -p issen-cli` green (all `FindingRow`
+construction sites updated); `cargo clippy … -D warnings` clean on the touched crates; the added lines
+pass `cargo fmt --check`. (Note: the base tree has *pre-existing* fmt diffs in files this PR does not
+touch — `issen-mem/tests/zz_scratch_netscan.rs`, `issen-signatures/.../sigma.rs`, unrelated lines in
+`issen-report/src/lib.rs` — so a workspace-wide `cargo fmt --check` is already red independent of this PR.)
 
 ## Open questions
 
-1. Provenance richness: is `{source, artifact_path, evidence_ids}` enough, or do agents need the raw
-   byte offset / `$UsnJrnl` USN / MFT record number where applicable?
-2. `attack_technique`: single ID, or `Vec<String>` for findings spanning multiple techniques?
-3. Should `severity` and `confidence` stay independent (they are orthogonal — a low-severity finding can
-   be high-confidence), or does the report layer want a combined rank? (I think: keep orthogonal.)
+1. **Populate from correlation findings.** The real value lands when correlation-derived findings carry
+   their `confidence`/`assertion_level` into `scan_findings`. Is there a single sink where correlation
+   `Finding`s become `FindingRow`s, or do they flow through a different table today?
+2. **Provenance + ATT&CK technique** (the other two fields the first draft proposed) — add as a second
+   PR, or fold in here? Provenance shape: `{source, artifact_path, evidence_ids}` vs richer (USN/MFT
+   record)?
+3. `assertion_level` as free-text `Option<String>` vs a stored enum — string keeps the migration trivial
+   and matches DuckDB VARCHAR; an enum would need a check constraint. Preference?
