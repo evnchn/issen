@@ -233,6 +233,10 @@ fn show_flagged_json(store: &TimelineStore, rows: &[findings::FindingRow]) -> Re
                 "description": row.description,
                 "matched_indicator": row.matched_indicator,
                 "tags": tags,
+                // Agent-facing fields: `null` when the producing engine supplies
+                // no calibrated score / derivation level (never a fabricated default).
+                "confidence": row.confidence,
+                "assertion_level": row.assertion_level,
             })
         })
         .collect();
