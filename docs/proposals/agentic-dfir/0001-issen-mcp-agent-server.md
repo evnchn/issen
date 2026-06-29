@@ -80,3 +80,18 @@ intent into flags — the "human in the loop, not in the hot loop" shape.
 3. Should `findings_list` carry confidence/provenance? That depends on RFC 0002 — these two compose.
 4. Auth/sandboxing expectations when the agent is untrusted: is read-only-DB-handle enough, or is a
    path allowlist for `--sql`-reachable tables wanted?
+
+## Prior art in this repo (re-anchored after a code review pass)
+
+This is **not greenfield** — it should reference, not reinvent, two things already in the tree:
+
+- `docs/plans/archive/2026-06-15-findevil-mcp-fleet-design.md` already designs a thin, **read-only,
+  agent-facing MCP server** for this fleet (typed tools, an allowlist, testable dispatch — the same
+  shape proposed here). This RFC is best read as *applying that already-designed `-mcp` pattern to
+  issen specifically*.
+- `north-star-advisor/docs/architecture/INTELLIGENCE_LAYER.md` specs `issen-intel`, a local-first,
+  grounded-generation AI layer. `issen-mcp` is **complementary, not overlapping**: the MCP server is
+  the *interface an external agent drives*; `issen-intel` is the *AI brain*. They compose.
+
+(Accuracy note: the only `agent` matches in the Rust today are SSH/HTTP **user-agent** strings, not an
+agent interface — the gap this addresses is real.)
