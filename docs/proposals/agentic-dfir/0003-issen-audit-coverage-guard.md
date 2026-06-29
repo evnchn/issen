@@ -74,3 +74,23 @@ into the honest "X is not yet supported by the evidence I parsed."
 2. Kill-chain model: stick to a simple collection→execution→staging→exfil→cleanup, or map straight onto
    MITRE ATT&CK tactics (the correlation layer already speaks technique IDs)?
 3. Should `audit` exit non-zero when a stage is fully blind, so CI / an agent harness can gate on it?
+
+## Correction: a coverage primitive already exists (caught in a code review pass)
+
+The first draft implied issen has **no** way to distinguish "parsed and found nothing" from "never
+looked." That is **wrong** and should be corrected before this is taken seriously:
+
+- `issen-core/src/coverage.rs` already defines a `CoverageManifest` that distinguishes
+  **searched-absent** from **not-searched**.
+- `ingest` already prints a merged coverage summary at the end of a run.
+
+So this RFC must **not reinvent coverage detection.** The actual, much smaller proposal is:
+
+1. **Persist** the existing `CoverageManifest` into the timeline DB (it is computed during ingest but
+   not currently stored for later query).
+2. Add a read-only `issen audit` subcommand that **queries that stored manifest** and presents it
+   **keyed to the kill chain** (collection → execution → staging → exfil → cleanup) so a "nothing
+   found" in a blind stage reads as *not yet supported by evidence*.
+
+That is a serialization + a read-only view over data the pipeline already produces — not a new
+analysis. The kill-chain *grouping* is the only genuinely new (and opinion-needing) part.
