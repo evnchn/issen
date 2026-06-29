@@ -68,3 +68,15 @@ property is the agentic-DFIR move — the agent stops trusting un-anchored absol
    `clock_anchors` (always correct if an anchor is revised)? Leaning query-time.
 3. Does the report layer want to *refuse* to render an un-anchored absolute time by default, or only when
    `--require-anchor` is set? (Default-refuse is safer but noisier on single-host cases with no reference.)
+
+## Prior art + status (re-anchored after a code review pass)
+
+- `issen-correlation/src/skew.rs` detects pairwise divergence (`SkewFinding`) — confirmed detect-only,
+  no offset application.
+- The capstone plan `docs/plans/archive/2026-06-11-issen-correlate-capstone-v5.md` already records
+  clock-skew as a **partial** case finding and explicitly names the missing **PCAP/reference leg**.
+
+This RFC proposes the anchor + propagate plumbing for exactly that missing leg. It remains the **most
+speculative** of this set: the hard part — *inferring* the offset — stays manual/heuristic here; this
+only proposes applying and honestly tagging a *known* offset. Recommend pursuing it **after** 0002
+(implemented) and 0003 (grounded on the existing `CoverageManifest`).
